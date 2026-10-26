@@ -68,7 +68,7 @@ async function refreshContests() {
                 url: `https://codeforces.com/contests/${contest.id}`
             }));
 
-        // Replace cache only after a successful API response.
+        // Update cache only after a successful response.
         upcomingContests = contests;
         lastUpdated = new Date().toISOString();
         lastError = null;
@@ -80,28 +80,24 @@ async function refreshContests() {
     } catch (error) {
         lastError = error.message;
         console.error("Contest refresh failed:", error.message);
-
-        // Preserve the previous successful cache.
     } finally {
         isRefreshing = false;
     }
 }
 
-// Fetch immediately when the server starts
+// Fetch contests when the server starts
 refreshContests();
 
-// Schedule daily refreshes at 12 AM and 6 PM IST
+// Refresh every day at 12 AM and 6 PM IST
 cron.schedule(
     "0 0,18 * * *",
-    () => {
-        refreshContests();
-    },
+    refreshContests,
     {
         timezone: TIME_ZONE
     }
 );
 
-// API: return cached upcoming contests
+// API: get upcoming contests
 app.get("/api/contests", (req, res) => {
     res.set("Cache-Control", "no-store");
 
@@ -113,17 +109,48 @@ app.get("/api/contests", (req, res) => {
     });
 });
 
-// API: check server and cache status
+// API: manually refresh contests
+app.post("/api/contests/refresh", async (req, res) => {
+    if (isRefreshing) {
+        return res.status(409).json({
+            success: false,
+            message: "Refresh already in progress."
+        });
+    }
+
+    await refreshContests();
+
+    if (lastError) {
+        return res.status(502).json({
+            success: false,
+            message: "Failed to refresh contests.",
+            error: lastError,
+            lastUpdated
+        });
+    }
+
+    res.json({
+        success: true,
+        message: "Contests refreshed successfully.",
+        count: upcomingContests.length,
+        lastUpdated,
+        contests: upcomingContests
+    });
+});
+
+// API: server health
 app.get("/health", (req, res) => {
     res.json({
         status: "running",
         lastUpdated,
         lastError,
-        contestCount: upcomingContests.length
+        contestCount: upcomingContests.length,
+        refreshing: isRefreshing
     });
 });
 
-app.listen(PORT, () => {
-    console.log(`Backend running at http://localhost:${PORT}`);
+// Start server for Render
+app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Backend running on port ${PORT}`);
     console.log("Scheduled refreshes: 12 AM and 6 PM IST");
 });
