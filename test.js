@@ -9,14 +9,15 @@ const CODEFORCES_API =
     "https://codeforces.com/api/contest.list";
 
 const TIME_ZONE = "Asia/Kolkata";
+const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
 
 // In-memory cache
-let upcomingContests = [];
+let contestsCache = [];
 let lastUpdated = null;
 let lastError = null;
 let isRefreshing = false;
 
-// Fetch contests from Codeforces
+// Fetch recent finished contests and all upcoming contests
 async function refreshContests() {
     if (isRefreshing) {
         console.log("Refresh already in progress.");
@@ -45,20 +46,39 @@ async function refreshContests() {
         }
 
         const now = Math.floor(Date.now() / 1000);
+        const cutoff = now - THIRTY_DAYS_SECONDS;
 
         const contests = data.result
-            .filter(contest =>
-                contest.phase === "BEFORE" &&
-                contest.startTimeSeconds > now
-            )
-            .sort(
-                (a, b) =>
-                    a.startTimeSeconds - b.startTimeSeconds
+            .filter(contest => {
+                // Include every upcoming contest.
+                if (contest.phase === "BEFORE") {
+                    return contest.startTimeSeconds > now;
+                }
+
+                // Include running contests too.
+                if (contest.phase === "CODING") {
+                    return true;
+                }
+
+                // Include finished contests that started
+                // within the last 30 days.
+                if (contest.phase === "FINISHED") {
+                    return (
+                        contest.startTimeSeconds >= cutoff &&
+                        contest.startTimeSeconds <= now
+                    );
+                }
+
+                return false;
+            })
+            .sort((a, b) =>
+                a.startTimeSeconds - b.startTimeSeconds
             )
             .map(contest => ({
                 id: contest.id,
                 name: contest.name,
                 type: contest.type,
+                phase: contest.phase,
                 startTimeSeconds: contest.startTimeSeconds,
                 startTime: new Date(
                     contest.startTimeSeconds * 1000
@@ -69,17 +89,28 @@ async function refreshContests() {
             }));
 
         // Update cache only after a successful response.
-        upcomingContests = contests;
+        contestsCache = contests;
         lastUpdated = new Date().toISOString();
         lastError = null;
 
+        const upcomingCount = contests.filter(
+            c => c.phase === "BEFORE"
+        ).length;
+
+        const finishedCount = contests.filter(
+            c => c.phase === "FINISHED"
+        ).length;
+
         console.log(
-            `Successfully cached ${contests.length} upcoming contests.`
+            `Cached ${contests.length} contests: ` +
+            `${upcomingCount} upcoming, ${finishedCount} finished.`
         );
         console.log("Last updated:", lastUpdated);
     } catch (error) {
         lastError = error.message;
         console.error("Contest refresh failed:", error.message);
+
+        // Keep the previous successful cache on failure.
     } finally {
         isRefreshing = false;
     }
@@ -92,20 +123,18 @@ refreshContests();
 cron.schedule(
     "0 0,18 * * *",
     refreshContests,
-    {
-        timezone: TIME_ZONE
-    }
+    { timezone: TIME_ZONE }
 );
 
-// API: get upcoming contests
+// API: get recent, running, and upcoming contests
 app.get("/api/contests", (req, res) => {
     res.set("Cache-Control", "no-store");
 
     res.json({
         success: true,
-        count: upcomingContests.length,
+        count: contestsCache.length,
         lastUpdated,
-        contests: upcomingContests
+        contests: contestsCache
     });
 });
 
@@ -132,9 +161,9 @@ app.post("/api/contests/refresh", async (req, res) => {
     res.json({
         success: true,
         message: "Contests refreshed successfully.",
-        count: upcomingContests.length,
+        count: contestsCache.length,
         lastUpdated,
-        contests: upcomingContests
+        contests: contestsCache
     });
 });
 
@@ -144,7 +173,7 @@ app.get("/health", (req, res) => {
         status: "running",
         lastUpdated,
         lastError,
-        contestCount: upcomingContests.length,
+        contestCount: contestsCache.length,
         refreshing: isRefreshing
     });
 });
